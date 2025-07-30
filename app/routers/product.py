@@ -1,65 +1,101 @@
 # routers/product.py
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Body, HTTPException, status, File, UploadFile
+import aiofiles
+import uuid
+import os
 from fastapi.responses import JSONResponse
 from bson import ObjectId
-from databasea import product_collection, product_helper
-from modelsa import ProductCreateModel, ProductUpdateModel, User
-from autha import get_current_user
+
+from .. database import product_collection, product_helper
+from .. models import ProductCreateModel, ProductUpdateModel
 
 router = APIRouter()
 
-@router.post("/", response_description="Add new product", status_code=status.HTTP_201_CREATED)
-async def create_product(product: ProductCreateModel = Body(...), current_user: User = Depends(get_current_user)):
-    if current_user['role'] != 'admin':
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operation not permitted")
-    
+IMAGE_DIR = "static/images/"
+
+@router.post("/", status_code=status.HTTP_201_CREATED)
+async def create_product(product: ProductCreateModel = Body(...)):
     product_dict = product.dict()
     new_product = await product_collection.insert_one(product_dict)
     created_product = await product_collection.find_one({"_id": new_product.inserted_id})
-    return JSONResponse(status_code=status.HTTP_201_CREATED, content=product_helper(created_product))
+    return product_helper(created_product)
 
-@router.get("/", response_description="List all products")
+@router.get("/")
 async def get_all_products():
     products = []
     async for product in product_collection.find():
         products.append(product_helper(product))
     return products
 
-@router.get("/{id}", response_description="Get a single product")
+@router.get("/{id}")
 async def get_product_by_id(id: str):
-    try:
-        if (product := await product_collection.find_one({"_id": ObjectId(id)})) is not None:
-            return product_helper(product)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid ObjectId format")
-    raise HTTPException(status_code=404, detail=f"Product with ID {id} not found")
+    if (product := await product_collection.find_one({"_id": ObjectId(id)})) is not None:
+        return product_helper(product)
+    raise HTTPException(status_code=404, detail=f"Product {id} not found")
 
-@router.put("/{id}", response_description="Update a product")
-async def update_product(id: str, product: ProductUpdateModel = Body(...), current_user: User = Depends(get_current_user)):
-    if current_user['role'] != 'admin':
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operation not permitted")
-    
+@router.put("/{id}")
+async def update_product(id: str, product: ProductUpdateModel = Body(...)):
     product_data = {k: v for k, v in product.dict().items() if v is not None}
     if len(product_data) >= 1:
-        try:
-            update_result = await product_collection.update_one({"_id": ObjectId(id)}, {"$set": product_data})
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid ObjectId format")
+        update_result = await product_collection.update_one({"_id": ObjectId(id)}, {"$set": product_data})
         if update_result.modified_count == 1:
             if (updated_product := await product_collection.find_one({"_id": ObjectId(id)})) is not None:
                 return product_helper(updated_product)
     if (existing_product := await product_collection.find_one({"_id": ObjectId(id)})) is not None:
         return product_helper(existing_product)
-    raise HTTPException(status_code=404, detail=f"Product with ID {id} not found")
+    raise HTTPException(status_code=404, detail=f"Product {id} not found")
 
-@router.delete("/{id}", response_description="Delete a product")
-async def delete_product(id: str, current_user: User = Depends(get_current_user)):
-    if current_user['role'] != 'admin':
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operation not permitted")
+# --- Endpoint ใหม่สำหรับอัปโหลดรูปภาพ ---
+@router.post("/{id}/upload-image")
+async def upload_product_image(id: str, file: UploadFile = File(...)):
+    # ตรวจสอบว่ามีสินค้านี้อยู่จริงหรือไม่
+    product = await product_collection.find_one({"_id": ObjectId(id)})
+    if not product:
+        raise HTTPException(status_code=404, detail=f"Product {id} not found")
+
+    # สร้างชื่อไฟล์ใหม่ที่ไม่ซ้ำกันโดยใช้ UUID เพื่อป้องกันการเขียนทับ
+    file_extension = file.filename.split(".")[-1]
+    new_filename = f"{uuid.uuid4()}.{file_extension}"
+    file_path = os.path.join(IMAGE_DIR, new_filename)
+
+    # บันทึกไฟล์ลงใน disk แบบ async
     try:
-        delete_result = await product_collection.delete_one({"_id": ObjectId(id)})
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid ObjectId format")
-    if delete_result.deleted_count == 1:
-        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "Product successfully deleted"})
-    raise HTTPException(status_code=404, detail=f"Product with ID {id} not found")
+        async with aiofiles.open(file_path, 'wb') as out_file:
+            content = await file.read()
+            await out_file.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error uploading file: {e}")
+
+    # สร้าง URL ที่จะใช้เข้าถึงรูปภาพ
+    image_url = f"/{file_path}"
+    
+    # อัปเดต path ของรูปภาพลงในฐานข้อมูล
+    await product_collection.update_one(
+        {"_id": ObjectId(id)}, {"$set": {"image_url": image_url}}
+    )
+    
+    # ดึงข้อมูลสินค้าที่อัปเดตแล้วกลับไป
+    updated_product = await product_collection.find_one({"_id": ObjectId(id)})
+    return product_helper(updated_product)
+
+
+# --- แก้ไข Endpoint สำหรับลบสินค้า ---
+@router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_product(id: str):
+    # 1. ค้นหาสินค้าก่อนเพื่อเอา URL ของรูปภาพ
+    product_to_delete = await product_collection.find_one({"_id": ObjectId(id)})
+    
+    if not product_to_delete:
+        raise HTTPException(status_code=404, detail=f"Product {id} not found")
+
+    # 2. ลบไฟล์รูปภาพออกจาก disk (ถ้ามี)
+    image_url = product_to_delete.get("image_url")
+    if image_url:
+        # ลบ / ที่ข้างหน้าออกเพื่อให้เป็น path ที่ถูกต้อง
+        image_path = image_url.lstrip('/') 
+        if os.path.exists(image_path):
+            os.remove(image_path)
+    
+    # 3. ลบข้อมูลสินค้าออกจากฐานข้อมูล
+    await product_collection.delete_one({"_id": ObjectId(id)})
+    return
