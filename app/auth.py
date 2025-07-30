@@ -8,8 +8,8 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
-from .models import TokenData, User
-from .database import user_collection, user_helper
+from models import TokenData, User
+from database import user_collection, user_helper
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 

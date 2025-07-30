@@ -1,8 +1,8 @@
 # main.py
 from fastapi import FastAPI
-from .routers.product import router as product_router
-from .routers.order import router as order_router
-from .routers.auth import router as auth_router
+from routers.product import router as product_router
+from routers.order import router as order_router
+from routers.auth import router as auth_router
 
 app = FastAPI(
     title="Sleep As Sin POS API",

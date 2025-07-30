@@ -2,9 +2,9 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from bson import ObjectId
-from ..database import product_collection, product_helper
-from ..models import ProductCreateModel, ProductUpdateModel, User
-from ..auth import get_current_user
+from database import product_collection, product_helper
+from models import ProductCreateModel, ProductUpdateModel, User
+from auth import get_current_user
 
 router = APIRouter()
 
