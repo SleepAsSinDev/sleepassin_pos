@@ -18,12 +18,20 @@ async def create_order(order_data: OrderCreateModel = Body(...)):
         if not product:
             raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found.")
         
-        item_total = product["price"] * item.quantity
+        options_price = sum(opt.price for opt in item.selected_options)
+        
+        price_per_unit = product["price"] + options_price
+        
+        item_total = price_per_unit * item.quantity
         total_amount += item_total
         
         order_items.append({
-            "product_id": item.product_id, "product_name": product["name"],
-            "price_per_item": product["price"], "quantity": item.quantity
+            "product_id": item.product_id,
+            "product_name": product["name"],
+            "quantity": item.quantity,
+            "price_per_unit": price_per_unit,
+            "selected_options": [opt.dict() for opt in item.selected_options],
+            "item_total": item_total
         })
 
     new_order_data = {
